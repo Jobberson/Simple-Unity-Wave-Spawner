@@ -1,8 +1,7 @@
 
-using System.Collections.Generic;
 using UnityEngine;
 
-[CreateAssetMenu(menuName = "Snog/Simple Wave System/Enemy Definition", fileName = "Snog_EnemyDefinition")]
+[CreateAssetMenu(menuName = "Snog/Simple Wave System/Enemy Definition", fileName = "EnemyDefinition")]
 public class EnemyDefinition : ScriptableObject
 {
     [Header("Core")]
@@ -21,21 +20,12 @@ public class EnemyDefinition : ScriptableObject
     [Min(1)]
     public int maxWave = 999;
 
-    [Header("Tags (Optional)")]
-    public List<string> tags = new();
-
     public bool IsAvailableForWave(int wave)
     {
-        return wave >= minWave && wave <= maxWave && prefab != null && cost > 0 && weight > 0f;
-    }
-
-    public bool HasTag(string tag)
-    {
-        if (string.IsNullOrEmpty(tag))
-        {
-            return false;
-        }
-
-        return tags != null && tags.Contains(tag);
+        return wave >= minWave &&
+               wave <= maxWave &&
+               prefab != null &&
+               cost > 0 &&
+               weight > 0f;
     }
 }

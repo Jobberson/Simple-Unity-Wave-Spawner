@@ -2,34 +2,33 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-[CreateAssetMenu(menuName = "Snog/Simple Wave System/Wave Definition", fileName = "Snog_WaveDefinition")]
+[CreateAssetMenu(menuName = "Snog/Simple Wave System/Wave Definition", fileName = "WaveDefinition")]
 public class WaveDefinition : ScriptableObject
 {
-    [Header("Wave Curves")]
-    [Tooltip("X = wave number, Y = duration in seconds")]
+    [Header("Wave Curves (X = Wave Number, Y = Value)")]
     public AnimationCurve durationByWave = AnimationCurve.Linear(1f, 20f, 20f, 60f);
     public AnimationCurve budgetByWave = AnimationCurve.Linear(1f, 10f, 20f, 80f);
 
-    [Header("Spawn Pacing Curve")]
-    [Tooltip("X = normalized wave progress (0-1), Y = spawn speed multiplier")]
+    [Header("Spawn Pacing (X = 0..1 wave progress, Y = spawn speed multiplier)")]
     public AnimationCurve spawnPacing = AnimationCurve.Linear(0f, 1f, 1f, 1f);
 
-    [Header("Allowed Enemies")]
+    [Header("Allowed Enemies (Optional)")]
     [Tooltip("If empty, spawner will use its fallback enemy list.")]
     public List<EnemyDefinition> allowedEnemies = new();
 
-    [Header("Modifiers")]
+    [Header("Limits / Behavior")]
     [Min(1)]
     public int maxEnemiesPerWave = 50;
 
+    [Tooltip("If true, the wave can end early when there are no enemies left to spawn.")]
+    public bool endEarlyWhenSpawnQueueEmpty = true;
+
+    [Header("Multipliers")]
     [Min(0.1f)]
     public float durationMultiplier = 1f;
 
     [Min(0.1f)]
     public float budgetMultiplier = 1f;
-
-    [Tooltip("If true, the wave can end early when there are no enemies left to spawn.")]
-    public bool endEarlyWhenSpawnQueueEmpty = true;
 
     public int GetBudget(int wave)
     {
