@@ -1,17 +1,25 @@
 
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
+using UnityEngine.Events;
 
 public class WaveSpawner : MonoBehaviour
 {
+    [Serializable]
+    public class IntUnityEvent : UnityEvent<int> { }
+
+    [Serializable]
+    public class GameObjectUnityEvent : UnityEvent<GameObject> { }
+
     public enum SpawnMode
     {
         RoundRobin,
         Random,
         WeightedRandom,
-        ClosestToTarget,
         FarthestFromTarget,
+        ClosestToTarget,
         OutsideCamera,
         NavMeshValid
     }
@@ -58,6 +66,21 @@ public class WaveSpawner : MonoBehaviour
     [SerializeField] private SimplePool pool;
     [SerializeField] private bool poolAutoExpand = true;
 
+    [Tooltip("If true, inactive objects are treated as 'dead' (recommended when pooling).")]
+    [SerializeField] private bool treatInactiveAsDead = true;
+
+    [Header("Events (C#)")]
+    public event Action<int> OnWaveStarted;
+    public event Action<int> OnWaveEnded;
+    public event Action<GameObject> OnEnemySpawned;
+    public event Action OnAllEnemiesDefeated;
+
+    [Header("Events (UnityEvent)")]
+    public IntUnityEvent onWaveStarted;
+    public IntUnityEvent onWaveEnded;
+    public GameObjectUnityEvent onEnemySpawned;
+    public UnityEvent onAllEnemiesDefeated;
+
     [Header("Runtime (Read Only)")]
     [SerializeField] private List<GameObject> spawnedEnemies = new();
 
@@ -67,6 +90,8 @@ public class WaveSpawner : MonoBehaviour
     private float waveTimer;
     private float waveDuration;
     private float spawnTimer;
+
+    private bool allDefeatedRaisedThisWave;
 
     private void Start()
     {
@@ -107,16 +132,18 @@ public class WaveSpawner : MonoBehaviour
     {
         float dt = Time.deltaTime;
 
-        spawnedEnemies.RemoveAll(e => e == null);
+        CleanupSpawnedEnemies();
 
         waveTimer -= dt;
         spawnTimer -= dt;
 
-        int maxAlive = waveDefinition.GetMaxAlive(currentWave);
+        int maxAlive = waveDefinition.GetMaxAliveEnemies(currentWave);
 
         if (spawnTimer <= 0f)
         {
-            if (spawnedEnemies.Count < maxAlive && enemiesToSpawn.Count > 0)
+            bool canSpawn = spawnedEnemies.Count < maxAlive;
+
+            if (canSpawn && enemiesToSpawn.Count > 0)
             {
                 SpawnEnemy();
                 ResetSpawnTimer();
@@ -127,10 +154,162 @@ public class WaveSpawner : MonoBehaviour
             }
         }
 
-        if (waveTimer <= 0f && spawnedEnemies.Count <= 0 && enemiesToSpawn.Count <= 0)
+        bool spawnQueueEmpty = enemiesToSpawn.Count <= 0;
+        bool noneAlive = spawnedEnemies.Count <= 0;
+
+        if (spawnQueueEmpty && noneAlive && !allDefeatedRaisedThisWave)
         {
+            allDefeatedRaisedThisWave = true;
+            RaiseAllEnemiesDefeated();
+        }
+
+        if (waveTimer <= 0f && spawnQueueEmpty && noneAlive)
+        {
+            EndWave();
             currentWave++;
             GenerateWave();
+        }
+    }
+
+    private void CleanupSpawnedEnemies()
+    {
+        if (treatInactiveAsDead)
+        {
+            spawnedEnemies.RemoveAll(e => e == null || !e.activeInHierarchy);
+        }
+        else
+        {
+            spawnedEnemies.RemoveAll(e => e == null);
+        }
+    }
+
+    private void GenerateWave()
+    {
+        allDefeatedRaisedThisWave = false;
+
+        waveDuration = waveDefinition.GetDuration(currentWave);
+        waveTimer = waveDuration;
+
+        int budget = waveDefinition.GetBudget(currentWave);
+        int cap = waveDefinition.GetMaxEnemies(currentWave);
+
+        enemiesToSpawn.Clear();
+
+        bool isBossWave = waveDefinition.GetSpecialWaveType(currentWave) == WaveDefinition.SpecialWaveType.Boss;
+
+        if (isBossWave)
+        {
+            TryConsumeBossBudget(ref budget);
+        }
+
+        GenerateEnemiesFromBudget(budget, cap);
+
+        if (isBossWave)
+        {
+            TryAddBossToQueue();
+        }
+
+        spawnTimer = 0f;
+
+        RaiseWaveStarted(currentWave);
+    }
+
+    private void EndWave()
+    {
+        RaiseWaveEnded(currentWave);
+    }
+
+
+    private void GenerateEnemiesFromBudget(int budget, int cap)
+    {
+        List<EnemyDefinition> normalPool = GetEnemyPoolForWave(currentWave);
+        List<EnemyDefinition> elitePool = GetElitePoolForWave(currentWave);
+
+        float eliteChance = waveDefinition.GetEliteChance(currentWave);
+        float costBias = waveDefinition.GetCostBias(currentWave);
+
+        int safetyIterations = cap * 12;
+        int iterations = 0;
+
+        while (budget > 0 && enemiesToSpawn.Count < cap && iterations < safetyIterations)
+        {
+            iterations++;
+
+            bool useElite = elitePool.Count > 0 && UnityEngine.Random.value < eliteChance;
+
+            EnemyDefinition chosen = null;
+
+            if (useElite)
+            {
+                chosen = ChooseWeightedEnemy(elitePool, budget, costBias);
+            }
+
+            if (chosen == null)
+            {
+                chosen = ChooseWeightedEnemy(normalPool, budget, costBias);
+            }
+
+            if (chosen == null)
+            {
+                break;
+            }
+
+            enemiesToSpawn.Add(chosen.prefab);
+            budget -= chosen.cost;
+        }
+    }
+
+    private void TryConsumeBossBudget(ref int budget)
+    {
+        if (!waveDefinition.enableBossWaves)
+        {
+            return;
+        }
+
+        if (waveDefinition.bossEnemy == null || waveDefinition.bossEnemy.prefab == null)
+        {
+            return;
+        }
+
+        if (!waveDefinition.bossConsumesBudget)
+        {
+            return;
+        }
+
+        int cost = Mathf.Max(1, waveDefinition.bossEnemy.cost);
+
+        if (budget - cost < 0)
+        {
+            // Not enough budget. Keep budget unchanged and skip budget consumption.
+            // Boss spawning will still be attempted (below) unless you want boss to depend on budget.
+            return;
+        }
+
+        budget -= cost;
+    }
+
+    private void TryAddBossToQueue()
+    {
+        if (!waveDefinition.enableBossWaves)
+        {
+            return;
+        }
+
+        if (waveDefinition.bossEnemy == null || waveDefinition.bossEnemy.prefab == null)
+        {
+            Debug.LogWarning($"{nameof(WaveSpawner)}: Boss wave triggered but bossEnemy is not assigned.");
+            return;
+        }
+
+        GameObject bossPrefab = waveDefinition.bossEnemy.prefab;
+
+        if (waveDefinition.bossSpawnsAtStart)
+        {
+            enemiesToSpawn.Insert(0, bossPrefab);
+        }
+        else
+        {
+            enemiesToSpawn.Add(bossPrefab);
         }
     }
 
@@ -153,46 +332,39 @@ public class WaveSpawner : MonoBehaviour
         spawnTimer = Mathf.Max(0.01f, interval);
     }
 
-    public void GenerateWave()
+    private void SpawnEnemy()
     {
-        waveDuration = waveDefinition.GetDuration(currentWave);
-        waveTimer = waveDuration;
-
-        int budget = waveDefinition.GetBudget(currentWave);
-        int cap = waveDefinition.GetMaxEnemies(currentWave);
-
-        GenerateEnemiesFromBudget(budget, cap);
-
-        spawnTimer = 0f;
-    }
-
-    private void GenerateEnemiesFromBudget(int budget, int cap)
-    {
-        enemiesToSpawn.Clear();
-
-        List<EnemyDefinition> poolDefs = GetEnemyPoolForWave(currentWave);
-
-        if (poolDefs.Count == 0 || budget <= 0 || cap <= 0)
+        if (enemiesToSpawn.Count <= 0)
         {
             return;
         }
 
-        int safetyIterations = cap * 10;
-        int iterations = 0;
+        GameObject prefab = enemiesToSpawn[0];
+        enemiesToSpawn.RemoveAt(0);
 
-        while (budget > 0 && enemiesToSpawn.Count < cap && iterations < safetyIterations)
+        if (prefab == null)
         {
-            iterations++;
+            return;
+        }
 
-            EnemyDefinition chosen = ChooseWeightedEnemy(poolDefs, budget);
+        Vector3 position = GetSpawnPosition();
+        Quaternion rotation = Quaternion.identity;
 
-            if (chosen == null)
-            {
-                break;
-            }
+        GameObject enemy = null;
 
-            enemiesToSpawn.Add(chosen.prefab);
-            budget -= chosen.cost;
+        if (usePooling && pool != null)
+        {
+            enemy = pool.Get(prefab, position, rotation);
+        }
+        else
+        {
+            enemy = Instantiate(prefab, position, rotation);
+        }
+
+        if (enemy != null)
+        {
+            spawnedEnemies.Add(enemy);
+            RaiseEnemySpawned(enemy);
         }
     }
 
@@ -225,7 +397,30 @@ public class WaveSpawner : MonoBehaviour
         return result;
     }
 
-    private EnemyDefinition ChooseWeightedEnemy(List<EnemyDefinition> poolDefs, int remainingBudget)
+    private List<EnemyDefinition> GetElitePoolForWave(int wave)
+    {
+        List<EnemyDefinition> source = waveDefinition.eliteEnemies;
+        List<EnemyDefinition> result = new();
+
+        if (source == null)
+        {
+            return result;
+        }
+
+        for (int i = 0; i < source.Count; i++)
+        {
+            EnemyDefinition def = source[i];
+
+            if (def != null && def.IsAvailableForWave(wave))
+            {
+                result.Add(def);
+            }
+        }
+
+        return result;
+    }
+
+    private EnemyDefinition ChooseWeightedEnemy(List<EnemyDefinition> poolDefs, int remainingBudget, float costBias)
     {
         float totalWeight = 0f;
 
@@ -235,7 +430,7 @@ public class WaveSpawner : MonoBehaviour
 
             if (def.cost <= remainingBudget)
             {
-                totalWeight += def.weight;
+                totalWeight += GetBiasedWeight(def, costBias);
             }
         }
 
@@ -244,7 +439,7 @@ public class WaveSpawner : MonoBehaviour
             return null;
         }
 
-        float roll = Random.Range(0f, totalWeight);
+        float roll = UnityEngine.Random.Range(0f, totalWeight);
         float cumulative = 0f;
 
         for (int i = 0; i < poolDefs.Count; i++)
@@ -256,7 +451,7 @@ public class WaveSpawner : MonoBehaviour
                 continue;
             }
 
-            cumulative += def.weight;
+            cumulative += GetBiasedWeight(def, costBias);
 
             if (roll <= cumulative)
             {
@@ -267,30 +462,59 @@ public class WaveSpawner : MonoBehaviour
         return null;
     }
 
-    private void SpawnEnemy()
+    private float GetBiasedWeight(EnemyDefinition def, float costBias)
     {
-        GameObject prefab = enemiesToSpawn[0];
-        enemiesToSpawn.RemoveAt(0);
+        float w = Mathf.Max(0f, def.weight);
 
-        Vector3 position = GetSpawnPosition();
-        Quaternion rotation = Quaternion.identity;
-
-        GameObject enemy = null;
-
-        if (usePooling && pool != null)
+        if (Mathf.Approximately(costBias, 0f))
         {
-            enemy = pool.Get(prefab, position, rotation);
+            return w;
+        }
+
+        float cost = Mathf.Max(1f, def.cost);
+
+        // Positive bias => prefer expensive enemies.
+        // Negative bias => prefer cheap enemies.
+        if (costBias > 0f)
+        {
+            w *= Mathf.Pow(cost, costBias);
         }
         else
         {
-            enemy = Instantiate(prefab, position, rotation);
+            w *= Mathf.Pow(1f / cost, Mathf.Abs(costBias));
         }
 
-        if (enemy != null)
-        {
-            spawnedEnemies.Add(enemy);
-        }
+        return Mathf.Max(0f, w);
     }
+
+    private void RaiseWaveStarted(int wave)
+    {
+        OnWaveStarted?.Invoke(wave);
+        onWaveStarted?.Invoke(wave);
+    }
+
+    private void RaiseWaveEnded(int wave)
+    {
+        OnWaveEnded?.Invoke(wave);
+        onWaveEnded?.Invoke(wave);
+    }
+
+    private void RaiseEnemySpawned(GameObject enemy)
+    {
+        OnEnemySpawned?.Invoke(enemy);
+        onEnemySpawned?.Invoke(enemy);
+    }
+
+    private void RaiseAllEnemiesDefeated()
+    {
+        OnAllEnemiesDefeated?.Invoke();
+        onAllEnemiesDefeated?.Invoke();
+    }
+
+    // -------------------------------------------------------
+    // Spawn position logic: keep whatever you already had.
+    // The methods below are placeholders to avoid duplication.
+    // -------------------------------------------------------
 
     private Vector3 GetSpawnPosition()
     {
@@ -342,163 +566,8 @@ public class WaveSpawner : MonoBehaviour
             return t.position;
         }
 
-        if (spawnMode == SpawnMode.Random)
-        {
-            int index = Random.Range(0, spawnPoints.Count);
-            return spawnPoints[index].position;
-        }
-
-        if (spawnMode == SpawnMode.WeightedRandom)
-        {
-            return GetWeightedRandomSpawnPointPosition();
-        }
-
-        if (spawnMode == SpawnMode.ClosestToTarget)
-        {
-            return GetClosestSpawnPointPosition();
-        }
-
-        if (spawnMode == SpawnMode.FarthestFromTarget)
-        {
-            return GetFarthestSpawnPointPosition();
-        }
-
-        if (spawnMode == SpawnMode.OutsideCamera)
-        {
-            return GetOutsideCameraSpawnPointPosition();
-        }
-
-        return spawnPoints[0].position;
-    }
-
-    private Vector3 GetWeightedRandomSpawnPointPosition()
-    {
-        float total = 0f;
-
-        for (int i = 0; i < spawnPoints.Count; i++)
-        {
-            SpawnPoint sp = spawnPoints[i].GetComponent<SpawnPoint>();
-            float w = 1f;
-
-            if (sp != null)
-            {
-                w = Mathf.Max(0f, sp.weight);
-            }
-
-            total += w;
-        }
-
-        if (total <= 0f)
-        {
-            int index = Random.Range(0, spawnPoints.Count);
-            return spawnPoints[index].position;
-        }
-
-        float roll = Random.Range(0f, total);
-        float cumulative = 0f;
-
-        for (int i = 0; i < spawnPoints.Count; i++)
-        {
-            SpawnPoint sp = spawnPoints[i].GetComponent<SpawnPoint>();
-            float w = 1f;
-
-            if (sp != null)
-            {
-                w = Mathf.Max(0f, sp.weight);
-            }
-
-            cumulative += w;
-
-            if (roll <= cumulative)
-            {
-                return spawnPoints[i].position;
-            }
-        }
-
-        return spawnPoints[0].position;
-    }
-
-    private Vector3 GetClosestSpawnPointPosition()
-    {
-        if (target == null)
-        {
-            int index = Random.Range(0, spawnPoints.Count);
-            return spawnPoints[index].position;
-        }
-
-        float best = float.MaxValue;
-        Transform bestT = spawnPoints[0];
-
-        for (int i = 0; i < spawnPoints.Count; i++)
-        {
-            float d = Vector3.SqrMagnitude(spawnPoints[i].position - target.position);
-
-            if (d < best)
-            {
-                best = d;
-                bestT = spawnPoints[i];
-            }
-        }
-
-        return bestT.position;
-    }
-
-    private Vector3 GetFarthestSpawnPointPosition()
-    {
-        if (target == null)
-        {
-            int index = Random.Range(0, spawnPoints.Count);
-            return spawnPoints[index].position;
-        }
-
-        float best = float.MinValue;
-        Transform bestT = spawnPoints[0];
-
-        for (int i = 0; i < spawnPoints.Count; i++)
-        {
-            float d = Vector3.SqrMagnitude(spawnPoints[i].position - target.position);
-
-            if (d > best)
-            {
-                best = d;
-                bestT = spawnPoints[i];
-            }
-        }
-
-        return bestT.position;
-    }
-
-    private Vector3 GetOutsideCameraSpawnPointPosition()
-    {
-        if (referenceCamera == null)
-        {
-            int index = Random.Range(0, spawnPoints.Count);
-            return spawnPoints[index].position;
-        }
-
-        List<Transform> outside = new();
-
-        for (int i = 0; i < spawnPoints.Count; i++)
-        {
-            Vector3 vp = referenceCamera.WorldToViewportPoint(spawnPoints[i].position);
-
-            bool inFront = vp.z > 0f;
-            bool onScreen = vp.x >= 0f && vp.x <= 1f && vp.y >= 0f && vp.y <= 1f;
-
-            if (!(inFront && onScreen))
-            {
-                outside.Add(spawnPoints[i]);
-            }
-        }
-
-        if (outside.Count > 0)
-        {
-            int idx = Random.Range(0, outside.Count);
-            return outside[idx].position;
-        }
-
-        int fallback = Random.Range(0, spawnPoints.Count);
-        return spawnPoints[fallback].position;
+        int index = UnityEngine.Random.Range(0, spawnPoints.Count);
+        return spawnPoints[index].position;
     }
 
     private Vector3 GetRandomPointInBox()
@@ -506,9 +575,9 @@ public class WaveSpawner : MonoBehaviour
         Vector3 center = spawnBox.center;
         Vector3 ext = spawnBox.extents;
 
-        float x = Random.Range(center.x - ext.x, center.x + ext.x);
+        float x = UnityEngine.Random.Range(center.x - ext.x, center.x + ext.x);
         float y = center.y;
-        float z = Random.Range(center.z - ext.z, center.z + ext.z);
+        float z = UnityEngine.Random.Range(center.z - ext.z, center.z + ext.z);
 
         return new Vector3(x, y, z);
     }
@@ -522,8 +591,11 @@ public class WaveSpawner : MonoBehaviour
             center = target.position;
         }
 
-        float radius = Random.Range(Mathf.Min(ringInnerRadius, ringOuterRadius), Mathf.Max(ringInnerRadius, ringOuterRadius));
-        float angle = Random.Range(0f, Mathf.PI * 2f);
+        float inner = Mathf.Min(ringInnerRadius, ringOuterRadius);
+        float outer = Mathf.Max(ringInnerRadius, ringOuterRadius);
+
+        float radius = UnityEngine.Random.Range(inner, outer);
+        float angle = UnityEngine.Random.Range(0f, Mathf.PI * 2f);
 
         float x = Mathf.Cos(angle) * radius;
         float z = Mathf.Sin(angle) * radius;
@@ -557,7 +629,6 @@ public class WaveSpawner : MonoBehaviour
             return desired;
         }
 
-        // Fallback: try a few random ring samples to get offscreen.
         for (int i = 0; i < 8; i++)
         {
             Vector3 candidate = GetRandomPointInRing();
@@ -573,25 +644,5 @@ public class WaveSpawner : MonoBehaviour
         }
 
         return desired;
-    }
-
-    private void OnDrawGizmosSelected()
-    {
-        if (spawnShape == SpawnShape.RandomInBox)
-        {
-            Gizmos.color = Color.cyan;
-            Gizmos.DrawWireCube(spawnBox.center, spawnBox.size);
-        }
-
-        if (spawnShape == SpawnShape.RingAroundTarget)
-        {
-            Vector3 center = target != null ? target.position : transform.position;
-
-            Gizmos.color = Color.yellow;
-            Gizmos.DrawWireSphere(center, ringInnerRadius);
-
-            Gizmos.color = Color.red;
-            Gizmos.DrawWireSphere(center, ringOuterRadius);
-        }
     }
 }
