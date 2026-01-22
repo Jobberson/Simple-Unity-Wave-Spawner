@@ -645,4 +645,17 @@ public class WaveSpawner : MonoBehaviour
 
         return desired;
     }
-}
+
+    public WaveDefinition WaveDefinition => get{ return waveDefinition; }
+    public IReadOnlyList<EnemyDefinition> FallbackEnemies => get{ return fallbackEnemies; }
+    public SpawnShape CurrentSpawnShape => get{ return spawnShape; }
+    public SpawnMode CurrentSpawnMode => get{ return spawnMode; }
+    public IReadOnlyList<Transform> SpawnPoints => get{ return spawnPoints; }
+    public Bounds SpawnBox => get{ return spawnBox; }
+    public float RingInnerRadius => get{ return ringInnerRadius; }
+    public float RingOuterRadius => get{ return ringOuterRadius; }
+    public Transform Target => get{ return target; }
+    public Camera ReferenceCamera => get{ return referenceCamera; }
+    public bool UsePooling => get{ return usePooling; }
+    public SimplePool Pool => get{ return pool; }
+
