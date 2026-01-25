@@ -1,8 +1,11 @@
 
 using UnityEngine;
 
-public class SpawnPoint : MonoBehaviour
+namespace Snog.SimpleWaveSystem.Helpers
 {
-    [Min(0f)]
-    public float weight = 1f;
+    public class SpawnPoint : MonoBehaviour
+    {
+        [Min(0f)]
+        public float weight = 1f;
+    }
 }

@@ -2,122 +2,125 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public class SimplePool : MonoBehaviour
+namespace Snog.SimpleWaveSystem.Core
 {
-    [System.Serializable]
-    public class WarmupEntry
+    public class SimplePool : MonoBehaviour
     {
-        public GameObject prefab;
-
-        [Min(0)]
-        public int count;
-    }
-
-    [SerializeField] private bool autoExpand = true;
-    [SerializeField] private List<WarmupEntry> warmup = new();
-
-    private readonly Dictionary<GameObject, Queue<GameObject>> pools = new();
-
-    private void Awake()
-    {
-        WarmupAll();
-    }
-
-    public void SetAutoExpand(bool value)
-    {
-        autoExpand = value;
-    }
-
-    public void WarmupAll()
-    {
-        for (int i = 0; i < warmup.Count; i++)
+        [System.Serializable]
+        public class WarmupEntry
         {
-            WarmupEntry entry = warmup[i];
+            public GameObject prefab;
 
-            if (entry != null && entry.prefab != null && entry.count > 0)
+            [Min(0)]
+            public int count;
+        }
+
+        [SerializeField] private bool autoExpand = true;
+        [SerializeField] private List<WarmupEntry> warmup = new();
+
+        private readonly Dictionary<GameObject, Queue<GameObject>> pools = new();
+
+        private void Awake()
+        {
+            WarmupAll();
+        }
+
+        public void SetAutoExpand(bool value)
+        {
+            autoExpand = value;
+        }
+
+        public void WarmupAll()
+        {
+            for (int i = 0; i < warmup.Count; i++)
             {
-                Warmup(entry.prefab, entry.count);
+                WarmupEntry entry = warmup[i];
+
+                if (entry != null && entry.prefab != null && entry.count > 0)
+                {
+                    Warmup(entry.prefab, entry.count);
+                }
             }
         }
-    }
 
-    public void Warmup(GameObject prefab, int count)
-    {
-        if (prefab == null || count <= 0)
+        public void Warmup(GameObject prefab, int count)
         {
-            return;
+            if (prefab == null || count <= 0)
+            {
+                return;
+            }
+
+            Queue<GameObject> q = GetOrCreateQueue(prefab);
+
+            for (int i = 0; i < count; i++)
+            {
+                GameObject obj = CreateInstance(prefab);
+                Return(prefab, obj);
+            }
         }
 
-        Queue<GameObject> q = GetOrCreateQueue(prefab);
-
-        for (int i = 0; i < count; i++)
+        public GameObject Get(GameObject prefab, Vector3 position, Quaternion rotation)
         {
-            GameObject obj = CreateInstance(prefab);
-            Return(prefab, obj);
-        }
-    }
-
-    public GameObject Get(GameObject prefab, Vector3 position, Quaternion rotation)
-    {
-        if (prefab == null)
-        {
-            return null;
-        }
-
-        Queue<GameObject> q = GetOrCreateQueue(prefab);
-
-        GameObject obj = null;
-
-        while (q.Count > 0 && obj == null)
-        {
-            obj = q.Dequeue();
-        }
-
-        if (obj == null)
-        {
-            if (!autoExpand)
+            if (prefab == null)
             {
                 return null;
             }
 
-            obj = CreateInstance(prefab);
+            Queue<GameObject> q = GetOrCreateQueue(prefab);
+
+            GameObject obj = null;
+
+            while (q.Count > 0 && obj == null)
+            {
+                obj = q.Dequeue();
+            }
+
+            if (obj == null)
+            {
+                if (!autoExpand)
+                {
+                    return null;
+                }
+
+                obj = CreateInstance(prefab);
+            }
+
+            obj.transform.SetPositionAndRotation(position, rotation);
+            obj.SetActive(true);
+
+            return obj;
         }
 
-        obj.transform.SetPositionAndRotation(position, rotation);
-        obj.SetActive(true);
-
-        return obj;
-    }
-
-    public void Return(GameObject prefab, GameObject obj)
-    {
-        if (prefab == null || obj == null)
+        public void Return(GameObject prefab, GameObject obj)
         {
-            return;
+            if (prefab == null || obj == null)
+            {
+                return;
+            }
+
+            obj.SetActive(false);
+            obj.transform.SetParent(transform, true);
+
+            Queue<GameObject> q = GetOrCreateQueue(prefab);
+            q.Enqueue(obj);
         }
 
-        obj.SetActive(false);
-        obj.transform.SetParent(transform, true);
-
-        Queue<GameObject> q = GetOrCreateQueue(prefab);
-        q.Enqueue(obj);
-    }
-
-    private Queue<GameObject> GetOrCreateQueue(GameObject prefab)
-    {
-        if (!pools.TryGetValue(prefab, out Queue<GameObject> q))
+        private Queue<GameObject> GetOrCreateQueue(GameObject prefab)
         {
-            q = new Queue<GameObject>();
-            pools.Add(prefab, q);
+            if (!pools.TryGetValue(prefab, out Queue<GameObject> q))
+            {
+                q = new Queue<GameObject>();
+                pools.Add(prefab, q);
+            }
+
+            return q;
         }
 
-        return q;
-    }
-
-    private GameObject CreateInstance(GameObject prefab)
-    {
-        GameObject obj = Instantiate(prefab, Vector3.zero, Quaternion.identity);
-        obj.transform.SetParent(transform, true);
-        return obj;
+        private GameObject CreateInstance(GameObject prefab)
+        {
+            GameObject obj = Instantiate(prefab, Vector3.zero, Quaternion.identity);
+            obj.transform.SetParent(transform, true);
+            return obj;
+        }
     }
 }
